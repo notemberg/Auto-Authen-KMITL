@@ -26,6 +26,8 @@ agent = requests.session()
 
 # handle Ctrl+C
 def signal_handler(signal, frame):
+    print_format('Logging out before exit...', end='\n')
+    logout()
     print_format('Good bye!', end='\n')
     sys.exit(0)
 
@@ -87,20 +89,57 @@ def init():
     print_format('CE-HOUSE', show_time=True)
 
 def login():
-    global data
     try:
         url = server_url
         content = agent.post(url,params={'userName': username, 'userPass': password,'uaddress': ipAddress,'umac':umac,'agreed':1,'acip':acip,'authType':1})
     except requests.exceptions.RequestException:
         print_format('Connection lost...' ,show_time=True, end='\n')
         return
-    content_dict = json.loads(content.text)
-
-    # check if request is successful
-    data = content_dict['data']
-
+    
     if content.status_code != 200:
         print_format('Error! Something went wrong (maybe wrong username and/or password?)...')
+        return
+    
+    content_dict = json.loads(content.text)
+
+    # Check if the portal actually considered the login a success
+    if content_dict.get('success'):
+        data = content_dict.get('data', {})
+        
+        # --- THE MAGIC FIX: GRAB THE TOKEN ---
+        token = content_dict.get('token')
+        if token:
+            # Save the token to the session headers so logout and heartbeat can use it!
+            agent.headers.update({"X-XSRF-TOKEN": token})
+        # -------------------------------------
+    else:
+        print_format('Portal rejected the login attempt.')
+    
+
+def logout():
+    try:
+        url = "https://portal.kmitl.ac.th:19008/portalauth/logout"
+
+        headers = {
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Origin": "https://portal.kmitl.ac.th:19008",
+            "Referer": "https://portal.kmitl.ac.th:19008/",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+
+        # attach XSRF token if exists
+        if "XSRF-TOKEN" in agent.cookies:
+            headers["X-XSRF-TOKEN"] = agent.cookies.get("XSRF-TOKEN")
+
+        response = agent.post(url, headers=headers, data="")
+
+        if response.status_code == 200:
+            print_format("Logout successful: {response.text}")
+        else:
+            print_format(f"Logout failed: {response.status_code}")
+
+    except requests.exceptions.RequestException:
+        print_format("Logout request failed (network issue)")
 
 def heatbeat() -> (bool, bool):
     try:
@@ -137,7 +176,7 @@ def start():
     while True:
         remain_to_reset = reset_timer-time.time()
         connection, internet = checkConnection()
-        if remain_to_reset <= 480:
+        if remain_to_reset <= 600:
             return
         if(connection and internet):
             if not printed_logged_in:  # print only when log in successful
@@ -156,6 +195,7 @@ def start():
 ''', show_time=False)
                 printed_logged_in = True
                 printed_lost = False
+                print(agent.cookies.get_dict())
             time.sleep(time_repeat)
             connection, heatdone = heatbeat()
             if not connection and not heatdone:
